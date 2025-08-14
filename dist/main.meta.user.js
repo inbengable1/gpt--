@@ -14,13 +14,13 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 //
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/conf.js
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/utils.js
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/dom.adapters.js
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/storage.idb.js
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/ui.panel.js
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/uploader.js
-// @require      https://raw.githubusercontent.com/yourname/yourrepo/main/src/control.runner.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/conf.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/utils.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/dom.adapters.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/storage.idb.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/ui.panel.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/uploader.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/control.runner.js
 // ==/UserScript==
 
 /*
