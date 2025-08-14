@@ -1,0 +1,35 @@
+// src/bridge.globals.js
+(function (global) {
+  'use strict';
+  const NS = (global.GPTBatch = global.GPTBatch || {});
+  const C  = NS.Config || {};
+  const U  = (NS.Utils  = NS.Utils || {});
+
+  // 把 Config 的常量抛到全局（供老代码直接用）
+  Object.assign(global, {
+    BASE_URL: C.BASE_URL,                // getter
+    EDITOR_SEL: C.EDITOR_SEL,
+    PRE_PASTE_DELAY_MS: C.PRE_PASTE_DELAY_MS,
+    QUIET_MS: C.QUIET_MS,
+    UPLOAD_READY_TIMEOUT_MS: C.UPLOAD_READY_TIMEOUT_MS,
+    SEND_ACCEPT_TIMEOUT_MS: C.SEND_ACCEPT_TIMEOUT_MS,
+    REPLY_DONE_TIMEOUT_MS: C.REPLY_DONE_TIMEOUT_MS,
+    ATTACH_POST_READY_MS: C.ATTACH_POST_READY_MS,
+    PROMPT_DELAY_MS: C.PROMPT_DELAY_MS,
+    SEND_RETRY_MAX: C.SEND_RETRY_MAX,
+  });
+
+  // 把工具函数抛到全局
+  Object.assign(global, {
+    sleep: U.sleep,
+    nowStamp: U.nowStamp,
+    getParam: U.getParam,
+    makeFreshId: U.makeFreshId,
+    escapeHtml: U.escapeHtml,
+    buildNewChatURL: U.buildNewChatURL,
+    saveTxt: U.saveTxt,
+    openNewTab: U.openNewTab,
+    tryCloseSelf: U.tryCloseSelf,
+    toast: U.toast,
+  });
+})(typeof window !== 'undefined' ? window : this);
