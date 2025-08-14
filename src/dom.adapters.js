@@ -1,49 +1,40 @@
-/* dom.adapters.js — ChatGPT 批处理 · 页面适配与提取模块 (IIFE)
-   暴露：window.GPTBatch.DOM
-*/
+// dom.adapters.js — 找编辑器/容器 & 提取文本（精简、适配 GPTB）
 (function (global) {
   'use strict';
-  const NS = (global.GPTBatch = global.GPTBatch || {});
+  global.GPTB = global.GPTB || {};
 
-  /** 获取页面编辑器元素 **/
-  function getEditorElement() {
-    // 通过特定的选择器找到编辑器（聊天输入框）
-    return document.querySelector('#prompt-textarea, [contenteditable="true"].ProseMirror');
+  // 找到当前可用的编辑器（优先可见节点）
+  function getEditor() {
+    const candidates = document.querySelectorAll('#prompt-textarea, [contenteditable="true"].ProseMirror');
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      const visible = r.width > 0 && r.height > 0;
+      if (visible) return el;
+    }
+    return candidates[0] || null;
   }
 
-  /** 等待选择器（带超时） **/
+  // 等待选择器出现；超时返回 null（不抛错，交由上层处理）
   function waitForSelector(sel, timeout = 20000) {
     const t0 = Date.now();
-    return new Promise((resolve, reject) => {
-      const interval = setInterval(() => {
+    return new Promise((resolve) => {
+      const tick = setInterval(() => {
         const el = document.querySelector(sel);
-        if (el) {
-          clearInterval(interval);
-          resolve(el);
-        } else if (Date.now() - t0 >= timeout) {
-          clearInterval(interval);
-          reject(new Error(`等待元素超时：${sel}`));
-        }
+        if (el) { clearInterval(tick); resolve(el); }
+        else if (Date.now() - t0 >= timeout) { clearInterval(tick); resolve(null); }
       }, 100);
     });
   }
 
-  /** 粘贴文件到编辑器（通过 ClipboardEvent） **/
-  function pasteFilesToEditor(editor, files) {
-    const dt = new DataTransfer();
-    files.forEach(f => dt.items.add(f));
-    const evt = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
-    Object.defineProperty(evt, 'clipboardData', { value: dt });
-    editor.dispatchEvent(evt);
-  }
-
-  /** 获取编辑器所在的表单容器（如包含输入框的表单） **/
+  // 编辑器所在的“composer”作用域（供后续查发送按钮等）
   function getComposerScope(editor) {
-    return editor.closest('form, [data-testid="composer"], [class*="composer"], [data-type*="composer"]')
-           || editor.parentElement || document;
+    const el = editor || getEditor();
+    if (!el) return document;
+    return el.closest('form, [data-testid="composer"], [class*="composer"], [data-type*="composer"]')
+        || el.parentElement || document;
   }
 
-  /** 提取助理的回复文本 **/
+  // 提取助手文本（含代码块）
   function extractAssistantText() {
     const root = document.querySelector('main') || document.body;
     const lines = [];
@@ -63,45 +54,6 @@
     return lines.join('\n').replace(/\n{3,}/g, '\n\n');
   }
 
-  /** 提取错误信息列表 **/
-  function extractErrorList() {
-    const errors = [];
-    const root = document.querySelector('main') || document.body;
-    root.querySelectorAll('.error-message, .error').forEach(err => {
-      errors.push(err.innerText.trim());
-    });
-    return errors;
-  }
-
-  /** 启动进度提示 **/
-  function showProgressMessage(message) {
-    const progressMessage = document.createElement('div');
-    progressMessage.textContent = message;
-    progressMessage.style.position = 'fixed';
-    progressMessage.style.top = '50%';
-    progressMessage.style.left = '50%';
-    progressMessage.style.transform = 'translate(-50%, -50%)';
-    progressMessage.style.padding = '10px';
-    progressMessage.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-    progressMessage.style.color = '#fff';
-    progressMessage.style.borderRadius = '5px';
-    progressMessage.style.zIndex = '999999';
-    document.body.appendChild(progressMessage);
-
-    // 自动消失
-    setTimeout(() => {
-      progressMessage.remove();
-    }, 3000);
-  }
-
-  // 导出到命名空间
-  NS.DOM = {
-    getEditorElement,
-    waitForSelector,
-    pasteFilesToEditor,
-    getComposerScope,
-    extractAssistantText,
-    extractErrorList,
-    showProgressMessage
-  };
+  global.GPTB.dom = { getEditor, waitForSelector, getComposerScope, extractAssistantText };
+  try { console.log('[mini] dom.adapters loaded'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
