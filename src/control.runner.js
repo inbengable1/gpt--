@@ -5,8 +5,8 @@
 
   const NS = (global.GPTBatch = global.GPTBatch || {});
 
-  /** 主控制器 **/
-  function processNextIfAny() {
++  /** 主控制器 **/
++  async function processNextIfAny() {
     if (!isActiveRunner()) {
       if (MY_RUN_ID) tryCloseSelf(100);
       return;
@@ -178,3 +178,4 @@
   }
 
 })(typeof window !== 'undefined' ? window : this);
+
