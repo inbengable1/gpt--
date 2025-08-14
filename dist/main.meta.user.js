@@ -21,6 +21,7 @@
 // @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/ui.panel.js
 // @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/uploader.js
 // @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/control.runner.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/bridge.globals.js
 // ==/UserScript==
 
 /*
