@@ -1,31 +1,41 @@
-/* uploader.js — ChatGPT 批处理 · 文件上传模块 (IIFE)
-   暴露：window.GPTBatch.Uploader
-*/
+// uploader.js — 选文件存库 & 从库还原并粘贴
 (function (global) {
   'use strict';
-  const NS = (global.GPTBatch = global.GPTBatch || {});
+  global.GPTB = global.GPTB || {};
+  const S = global.GPTB.storage;
+  const U = global.GPTB.utils;
 
-  /** 等待上传完成的按钮（send按钮可用时） **/
-  async function waitUploadReadyByButton(editor, timeout = 60000) {
-    const scope = getComposerScope(editor);
-    const t0 = Date.now();
-    let quietStart = null;
-    while (Date.now() - t0 < timeout) {
-      if (shouldStop()) return false;
-      const btn = querySendStopButtonInScope(scope);
-      const ok = btn && buttonMode(btn) === 'send' && buttonEnabled(btn);
-      if (ok) {
-        if (quietStart == null) quietStart = Date.now();
-        if (Date.now() - quietStart >= QUIET_MS) return true;
-      } else {
-        quietStart = null;
-      }
-      await sleep(120);
-    }
-    return false;
+  function pickFiles() {
+    return new Promise((resolve) => {
+      const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true });
+      input.onchange = () => resolve([...input.files]);
+      input.click();
+    });
   }
 
-  /** 将文件粘贴到编辑器中 **/
+  async function selectAndSave() {
+    const files = await pickFiles();
+    if (!files.length) return [];
+    const metas = [];
+    for (const f of files) {
+      const meta = await S.saveFileBlob(f);
+      metas.push(meta);
+      U.toast(`已保存：${f.name} (${Math.ceil(f.size/1024/1024)}MB)`);
+    }
+    return metas;
+  }
+
+  // 从库还原多个 File
+  async function restoreFiles(fileIds) {
+    const arr = [];
+    for (const id of fileIds) {
+      const f = await S.restoreAsFile(id);
+      if (f) arr.push(f);
+    }
+    return arr;
+  }
+
+  // 粘贴到编辑器（DataTransfer + ClipboardEvent）
   function pasteFilesToEditor(editor, files) {
     const dt = new DataTransfer();
     files.forEach(f => dt.items.add(f));
@@ -34,33 +44,6 @@
     editor.dispatchEvent(evt);
   }
 
-  /** 上传文件并处理上传状态 **/
-  async function handleFileUpload(editor, files) {
-    // 等待文件上传按钮准备好
-    const ready = await waitUploadReadyByButton(editor, UPLOAD_READY_TIMEOUT_MS);
-    if (!ready) {
-      toast('上传超时，跳过文件上传');
-      return false;
-    }
-
-    // 粘贴文件到编辑器
-    pasteFilesToEditor(editor, files);
-    await sleep(ATTACH_POST_READY_MS);
-    return true;
-  }
-
-  /** 获取文件上传状态 **/
-  function getUploadStatus(editor) {
-    const scope = getComposerScope(editor);
-    const btn = querySendStopButtonInScope(scope);
-    return buttonMode(btn) === 'send' && buttonEnabled(btn);
-  }
-
-  /** 暴露给外部调用的接口 **/
-  NS.Uploader = {
-    waitUploadReadyByButton,
-    pasteFilesToEditor,
-    handleFileUpload,
-    getUploadStatus
-  };
+  global.GPTB.uploader = { selectAndSave, restoreFiles, pasteFilesToEditor };
+  try { console.log('[mini] uploader loaded'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
