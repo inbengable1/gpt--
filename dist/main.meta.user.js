@@ -8,8 +8,5 @@
 // @run-at       document-end
 // @noframes
 // @grant        GM_registerMenuCommand
-// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/conf.js
-// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/utils.js
-// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/ui.panel.js
-// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/control.runner.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/ping.js
 // ==/UserScript==
