@@ -1,11 +1,15 @@
 // ==UserScript==
-// @name         TM-Min-Empty
-// @namespace    https://example.com
+// @name         ChatGPT Batch (Mini UI Only)
+// @namespace    https://github.com/<User>/<Repo>
 // @version      0.0.1
+// @description  Minimal skeleton that only shows a floating UI panel.
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
-// @grant        none
 // @run-at       document-end
 // @noframes
+// @grant        GM_registerMenuCommand
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/conf.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/utils.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/ui.panel.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/control.runner.js
 // ==/UserScript==
-(function(){ console.log('[tm-min] alive'); })();
