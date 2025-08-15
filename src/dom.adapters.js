@@ -1,4 +1,4 @@
-// dom.adapters.js — 找编辑器/容器 & 提取文本（精简、适配 GPTB）
+// dom.adapters.js — 找编辑器/容器 & 提取文本 + 按钮状态检测（适配 GPTB）
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
@@ -54,6 +54,77 @@
     return lines.join('\n').replace(/\n{3,}/g, '\n\n');
   }
 
-  global.GPTB.dom = { getEditor, waitForSelector, getComposerScope, extractAssistantText };
-  try { console.log('[mini] dom.adapters loaded'); } catch {}
+  // ==========================
+  // 按钮状态检测（简洁且健壮）
+  // ==========================
+
+  // 在作用域中查找发送/停止按钮
+  function getSendStopButton(scope) {
+    const root = scope || document;
+    return (
+      root.querySelector('#composer-submit-button') ||
+      root.querySelector('button[data-testid="send-button"]') ||
+      root.querySelector('button[data-testid="stop-button"]') ||
+      root.querySelector('button[aria-label*="Send"]') ||
+      root.querySelector('button[aria-label*="Stop"]') ||
+      root.querySelector('button[type="submit"]') ||
+      null
+    );
+  }
+
+  // 返回 'send' / 'stop' / 'unknown'
+  function getButtonMode(btn) {
+    if (!btn) return 'unknown';
+    const tid  = (btn.getAttribute('data-testid')  || '').toLowerCase();
+    const aria = (btn.getAttribute('aria-label')   || '').toLowerCase();
+    const txt  = (btn.textContent || '').toLowerCase();
+    if (tid.includes('stop') || aria.includes('stop') || txt.includes('stop') || aria.includes('停止')) return 'stop';
+    if (tid.includes('send') || aria.includes('send') || txt.includes('send') || aria.includes('发送')) return 'send';
+    return 'unknown';
+  }
+
+  // 按钮是否可点击（未禁用、未 busy、可见且有尺寸）
+  function isButtonEnabled(btn) {
+    if (!btn) return false;
+    if (btn.disabled) return false;
+    if (btn.getAttribute('aria-disabled') === 'true') return false;
+    if (btn.getAttribute('aria-busy') === 'true') return false;
+    const r = btn.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    if (btn.closest('[aria-busy="true"], [data-state*="loading"], [data-loading="true"]')) return false;
+    if (btn.offsetParent === null) return false;
+    return true;
+  }
+
+  // 等到按钮处于 send 且 enabled，连续稳定 stableMs 毫秒（默认 500ms）
+  async function waitReadyToSend(scope, { timeout = 60000, stableMs = 500 } = {}) {
+    const t0 = Date.now();
+    let stableStart = 0;
+    while (Date.now() - t0 < timeout) {
+      const btn = getSendStopButton(scope);
+      const ok = btn && getButtonMode(btn) === 'send' && isButtonEnabled(btn);
+      if (ok) {
+        if (!stableStart) stableStart = Date.now();
+        if (Date.now() - stableStart >= stableMs) return true; // 连续稳定
+      } else {
+        stableStart = 0;
+      }
+      await new Promise(r => setTimeout(r, 120));
+    }
+    return false;
+  }
+
+  global.GPTB.dom = {
+    getEditor,
+    waitForSelector,
+    getComposerScope,
+    extractAssistantText,
+    // 按钮检测
+    getSendStopButton,
+    getButtonMode,
+    isButtonEnabled,
+    waitReadyToSend
+  };
+
+  try { console.log('[mini] dom.adapters loaded (+button state)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
