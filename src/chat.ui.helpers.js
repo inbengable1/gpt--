@@ -1,22 +1,19 @@
-// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→填prompt→回车提交（适配 GPTB）
+// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→填prompt→回车提交→（可选）抓取并保存回复
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
   const H = {};
 
-  // 依赖（存在就用；缺了会在运行时报友好提示）
-  const U  = global.GPTB.utils   || {};
-  const ST = global.GPTB.storage || {};
-  const D  = global.GPTB.dom     || {};
-  const UP = global.GPTB.uploader|| {};
+  const U  = global.GPTB.utils    || {};
+  const ST = global.GPTB.storage  || {};
+  const D  = global.GPTB.dom      || {};
+  const UP = global.GPTB.uploader || {};
 
-  // -------- 小工具 --------
   const sleep = (ms)=>new Promise(r=>setTimeout(r, ms));
   const toast = (msg)=> (U.toast ? U.toast(msg) : console.log('[gptb]', msg));
 
   function getPromptFromUI(optsPrompt) {
     if (typeof optsPrompt === 'string') return optsPrompt;
-    // 优先自定义 ID（若你在 conf 里定义了 PROMPT_INPUT_ID）
     const pid = global.GPTB.conf?.PROMPT_INPUT_ID;
     const el  = (pid && document.getElementById(pid))
              || document.getElementById('gptb-prompt')
@@ -24,38 +21,31 @@
     return (el && el.value) ? String(el.value) : '';
   }
 
-  // 在编辑器里写入文本：兼容 textarea(#prompt-textarea) & ProseMirror(contenteditable)
+  // 兼容 textarea(#prompt-textarea) & ProseMirror(contenteditable) 的文本写入
   function typePromptIntoEditor(editor, text) {
     if (!editor || !text) return false;
-
-    // 1) 如果是 textarea（#prompt-textarea）
+    // textarea
     if (editor.tagName === 'TEXTAREA' || editor.id === 'prompt-textarea') {
       try {
         const ta = editor;
         const prev = ta.value || '';
         ta.focus();
         ta.value = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
-        // 触发 input 让发送按钮刷新状态
-        const ev = new Event('input', { bubbles: true });
-        ta.dispatchEvent(ev);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
         return true;
-      } catch (e) {}
+      } catch {}
     }
-
-    // 2) contenteditable（ProseMirror）
+    // contenteditable
     try {
       editor.focus();
-      // 优先使用 insertText（更接近用户输入）
       const ok = document.execCommand && document.execCommand('insertText', false, text);
       if (!ok) {
-        // 退化：直接追加到末尾
         const span = document.createElement('span');
         span.textContent = text;
         editor.appendChild(span);
       }
       return true;
-    } catch (e) {}
-
+    } catch {}
     return false;
   }
 
@@ -65,16 +55,89 @@
     return await D.waitForSelector?.(sel, timeout);
   }
 
-  // -------- 主流程：从存储取文件→粘贴→（可选删库）→等待可发→填prompt→回车 --------
+  /*** 新增：回复期“写一个字符”，确保结束时按钮回到 send 可点 ***/
+  function nudgeEditorForReply(editor) {
+    const ed = editor;
+    if (!ed) return false;
+    try {
+      // textarea
+      if (ed.tagName === 'TEXTAREA' || ed.id === 'prompt-textarea') {
+        const prev = ed.value || '';
+        ed.value = prev + (prev.endsWith(' ') ? 'a' : ' a');
+        ed.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+      // contenteditable
+      ed.focus();
+      const ok = document.execCommand && document.execCommand('insertText', false, 'a');
+      if (!ok) {
+        const span = document.createElement('span'); span.textContent = 'a';
+        ed.appendChild(span);
+      }
+      // 某些实现需要一个 input-like 事件来刷新按钮
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    } catch {}
+    return false;
+  }
+
+  /*** 新增：等待按钮回到 send 且可点击（表示生成结束） ***/
+  async function waitReplyDone(scope, { timeout = 60000, stableMs = 400 } = {}) {
+    // 直接复用 dom.adapters 提供的判定：send + enabled 连续稳定
+    return !!(await D.waitReadyToSend?.(scope, { timeout, stableMs }));
+  }
+
+  /*** 新增：等待页面在 quietMs 内保持“无变化”，避免过早抓取 ***/
+  async function waitAssistantIdle(quietMs = 500, hardMs = 4000) {
+    const root = document.querySelector('main') || document.body;
+    let lastLen = 0, quietStart = 0;
+    const t0 = Date.now();
+    return new Promise((resolve) => {
+      const mo = new MutationObserver(() => {
+        const last = [...root.querySelectorAll('[data-message-author-role="assistant"]')].pop();
+        const len = last ? (last.innerText || '').length : 0;
+        if (len !== lastLen) { lastLen = len; quietStart = Date.now(); }
+      });
+      mo.observe(root, { childList: true, subtree: true, characterData: true });
+      const tick = setInterval(() => {
+        if (quietStart && Date.now() - quietStart >= quietMs) {
+          clearInterval(tick); mo.disconnect(); resolve(true);
+        }
+        if (Date.now() - t0 >= hardMs) {
+          clearInterval(tick); mo.disconnect(); resolve(true); // 兜底放行
+        }
+      }, 120);
+    });
+  }
+
+  /*** 新增：保存文本为文件（reply-时间戳.txt 或自定义前缀） ***/
+  function saveTextAsFile(text, base = 'reply') {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${base}-${stamp}.txt`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /*** 新增：抓取并保存最新助手回复 ***/
+  async function captureAndSaveReply({ baseName = 'reply', quietMs = 500, hardMs = 4000 } = {}) {
+    await waitAssistantIdle(quietMs, hardMs);
+    const text = D.extractAssistantText?.() || '';
+    if (text.trim()) {
+      saveTextAsFile(text, baseName);
+      toast('已保存回复');
+      return true;
+    } else {
+      toast('回复为空或提取失败');
+      return false;
+    }
+  }
+
   /**
-   * 从 IndexedDB 取指定文件并发送。
-   * @param {string} fileId - 存储里的文件 ID
-   * @param {object} opts
-   *   - prompt {string} 可选，覆盖从 UI 取的 prompt
-   *   - deleteAfter {boolean} 默认 true，粘贴后即删除存储的该文件
-   *   - timeout {number} 等待「可发送」的超时，默认 60000ms
-   *   - stableMs {number} 状态稳定期，默认 500ms
-   * @returns {boolean} 是否成功触发发送
+   * 现有：从 IndexedDB 取指定文件并发送（原有功能）
+   * @param {string} fileId
+   * @param {object} opts - { prompt, deleteAfter, timeout, stableMs }
    */
   async function runSendFromStorage(fileId, opts = {}) {
     const {
@@ -84,50 +147,32 @@
       stableMs    = 500
     } = opts;
 
-    // 0) 依赖检查
-    if (!ST.restoreAsFile || !UP.pasteFilesToEditor) {
-      toast('上传/存储依赖缺失（storage/uploader 未加载）');
-      return false;
-    }
-    if (!D.getComposerScope || !D.waitReadyToSend || !D.pressEnterInEditor) {
-      toast('DOM 适配依赖缺失（dom.adapters 未加载或缺少必要方法）');
-      return false;
-    }
+    if (!ST.restoreAsFile || !UP.pasteFilesToEditor) { toast('storage/uploader 未加载'); return false; }
+    if (!D.getComposerScope || !D.waitReadyToSend || !D.pressEnterInEditor) { toast('dom.adapters 未加载或缺少方法'); return false; }
 
-    // 1) 取文件
     const file = await ST.restoreAsFile(fileId);
     if (!file) { toast('未在存储中找到文件'); return false; }
 
-    // 2) 找编辑器并粘贴
     const editor = await getEditorOrWait();
     if (!editor) { toast('找不到输入框'); return false; }
-    try {
-      UP.pasteFilesToEditor(editor, [file]);
-      toast(`已粘贴：${file.name || '文件'}`);
-    } catch (e) {
-      toast('粘贴失败'); return false;
-    }
 
-    // 3) （可选）删除存储中的该文件
-    if (deleteAfter && ST.deleteFile) {
-      try { await ST.deleteFile(fileId); } catch (_) {}
-    }
+    // 粘贴
+    try { UP.pasteFilesToEditor(editor, [file]); toast(`已粘贴：${file.name || '文件'}`); }
+    catch { toast('粘贴失败'); return false; }
 
-    // 4) 等待按钮「可发送」稳定
+    // 粘贴后即删（按你的要求）
+    if (deleteAfter && ST.deleteFile) { try { await ST.deleteFile(fileId); } catch {} }
+
+    // 等“可发送”
     const scope = D.getComposerScope(editor);
     const ready = await D.waitReadyToSend(scope, { timeout, stableMs });
     if (!ready) { toast('未达到可发送状态'); return false; }
 
-    // 5) 写入 prompt（从 UI 读取或 opts.prompt）
+    // 写 prompt
     const text = getPromptFromUI(prompt);
-    if (text) {
-      const ok = typePromptIntoEditor(editor, text);
-      if (!ok) toast('写入提示词失败');
-      // 写入后稍等一下，让按钮状态/内部模型刷新
-      await sleep(80);
-    }
+    if (text) { typePromptIntoEditor(editor, text); await sleep(80); }
 
-    // 6) 回车提交（更稳）
+    // 回车发送
     const sent = D.pressEnterInEditor(editor);
     if (!sent) { toast('回车发送失败'); return false; }
 
@@ -135,11 +180,59 @@
     return true;
   }
 
-  // 暴露
+  /**
+   * 新增：从存储取文件 → 发送 → 写入一个字符 → 等结束 → 抓取并保存
+   * @param {string} fileId
+   * @param {object} opts - 同上 + { replyBaseName='reply', replyQuietMs=500, replyHardMs=4000 }
+   */
+  async function runSendFromStorageAndSave(fileId, opts = {}) {
+    const {
+      prompt      = undefined,
+      deleteAfter = true,
+      timeout     = 60000,
+      stableMs    = 500,
+      replyBaseName = undefined,      // 默认用文件名（去扩展名）
+      replyQuietMs  = 500,
+      replyHardMs   = 4000
+    } = opts;
+
+    // 先发
+    const ok = await runSendFromStorage(fileId, { prompt, deleteAfter, timeout, stableMs });
+    if (!ok) return false;
+
+    // “写一个字符”，保证结束后按钮回到 send
+    const editor = D.getEditor?.();
+    if (editor) nudgeEditorForReply(editor);
+
+    // 等生成结束（按钮回到 send 且可点）
+    const scope = D.getComposerScope(editor || null);
+    const done = await waitReplyDone(scope, { timeout, stableMs: 400 });
+    if (!done) { toast('生成超时'); return false; }
+
+    // 安静期后抓取并保存
+    // 用文件名做前缀更直观
+    let base = replyBaseName;
+    if (!base) {
+      try {
+        const meta = (await ST.listFiles())?.find(x => x.id === fileId); // 可能已删，兜底
+        base = meta?.name ? meta.name.replace(/\.[^.]+$/, '') : 'reply';
+      } catch { base = 'reply'; }
+    }
+    return await captureAndSaveReply({ baseName: base, quietMs: replyQuietMs, hardMs: replyHardMs });
+  }
+
+  // 导出
   H.runSendFromStorage = runSendFromStorage;
+  H.runSendFromStorageAndSave = runSendFromStorageAndSave;
   H.typePromptIntoEditor = typePromptIntoEditor;
   H.getPromptFromUI = getPromptFromUI;
+  H.nudgeEditorForReply = nudgeEditorForReply;
+  H.waitReplyDone = waitReplyDone;
+  H.waitAssistantIdle = waitAssistantIdle;
+  H.captureAndSaveReply = captureAndSaveReply;
+  H.saveTextAsFile = saveTextAsFile;
 
   global.GPTB.uiHelpers = H;
-  try { console.log('[mini] chat.ui.helpers loaded (runSendFromStorage)'); } catch {}
+  try { console.log('[mini] chat.ui.helpers loaded (send + capture/save)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
+
