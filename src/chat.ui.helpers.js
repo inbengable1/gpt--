@@ -235,4 +235,5 @@
   global.GPTB.uiHelpers = H;
   try { console.log('[mini] chat.ui.helpers loaded (send + capture/save)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
+  try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = window.GPTB; } catch {}
 
