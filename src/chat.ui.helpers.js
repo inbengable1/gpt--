@@ -21,39 +21,49 @@
     return (el && el.value) ? String(el.value) : '';
   }
 
-  // 兼容 textarea(#prompt-textarea) & ProseMirror(contenteditable) 的文本写入
-  function typePromptIntoEditor(editor, text) {
-    if (!editor || !text) return false;
-    // textarea
-    if (editor.tagName === 'TEXTAREA' || editor.id === 'prompt-textarea') {
-      try {
-        const ta = editor;
-        const prev = ta.value || '';
-        ta.focus();
-        ta.value = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        return true;
-      } catch {}
-    }
-    // contenteditable
+// 强化版：兼容 ProseMirror（contenteditable）与 React 控制的 textarea
+function typePromptIntoEditor(editor, text) {
+  if (!editor || !text) return false;
+
+  // 情况 A：React 控制的 <textarea id="prompt-textarea">
+  if (editor.tagName === 'TEXTAREA' || editor.id === 'prompt-textarea' && editor.tagName === 'TEXTAREA') {
     try {
-      editor.focus();
-      const ok = document.execCommand && document.execCommand('insertText', false, text);
-      if (!ok) {
-        const span = document.createElement('span');
-        span.textContent = text;
-        editor.appendChild(span);
-      }
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      const prev = editor.value || '';
+      const next = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
+      nativeSetter.call(editor, next);
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
       return true;
-    } catch {}
-    return false;
+    } catch (e) {}
   }
 
-  async function getEditorOrWait(sel = '#prompt-textarea', timeout = 20000) {
-    const ed = D.getEditor?.();
-    if (ed) return ed;
-    return await D.waitForSelector?.(sel, timeout);
-  }
+  // 情况 B：ProseMirror 的 contenteditable（你的页面就是这种）
+  try {
+    editor.focus();
+    // 先试试 insertText（对 ProseMirror 支持不错）
+    const ok = document.execCommand && document.execCommand('insertText', false, text);
+    if (!ok) {
+      // 退化：Selection/Range 插入
+      const sel = window.getSelection();
+      let range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      if (!range) {
+        range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        sel.removeAllRanges(); sel.addRange(range);
+      }
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.setEndAfter(node);
+      sel.removeAllRanges(); sel.addRange(range);
+    }
+    // 触发真正的 InputEvent，让框架刷新状态
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+    return true;
+  } catch (e) {}
+
+  return false;
 
   /*** 新增：回复期“写一个字符”，确保结束时按钮回到 send 可点 ***/
   function nudgeEditorForReply(editor) {
