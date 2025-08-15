@@ -6,9 +6,9 @@
   const LS_STATE = 'GPTB_BATCH_STATE';
   const LS_LOCK  = 'GPTB_BATCH_LOCK';
   const LS_KILL  = 'GPTB_BATCH_KILL';
-  const LS_ACTIVE = 'GPTB_ACTIVE_ID';             // 当前“激活页”ID
+  const LS_ACTIVE = 'GPTB_ACTIVE_ID';
   const CHAT_ORIGIN = 'https://chatgpt.com';
-  const CHAT_URL = CHAT_ORIGIN + '/?temporary-chat=true'; // 基础地址（会追加 fresh）
+  const CHAT_URL = CHAT_ORIGIN + '/?temporary-chat=true';
 
   const LOCK_TTL_MS = 180000;
   const WAIT_READY_MS = 3000;
@@ -20,7 +20,7 @@
 
   let CURRENT_OWNER = null;
 
-  // ------------- 工具 -------------
+  // --- 工具 ---
   function readJSON(k){ try{return JSON.parse(localStorage.getItem(k)||'null');}catch{return null} }
   function writeJSON(k,v){ try{localStorage.setItem(k,JSON.stringify(v));}catch{} }
   function now(){ return Date.now(); }
@@ -57,10 +57,9 @@
     return false;
   }
 
-  // --- 打开下一页（优先 GM_openInTab）---
+  // --- 打开下一页 ---
   function openNewTab(url){
     try {
-      // @grant GM_openInTab 时可用，更稳
       if (typeof GM_openInTab !== 'undefined') {
         GM_openInTab(url, { active:true, setParent:true, insert:true });
         return true;
@@ -68,15 +67,14 @@
     } catch {}
     const w = window.open(url, '_blank', 'noopener');
     if (w) return true;
-    // 最后兜底：创建 a 标签模拟点击
     const a = document.createElement('a');
     a.href = url; a.target = '_blank'; a.rel = 'noopener';
     document.body.appendChild(a); a.click(); a.remove();
     return true;
   }
 
-  // --- 强力关页（多重兜底）---
-  function tryCloseSelf(delayMs = 150){
+  // --- 强力关页（延迟 500ms）---
+  function tryCloseSelf(delayMs = 500){
     setTimeout(() => {
       try { window.close(); } catch {}
       try { window.opener = null; window.open('', '_self'); window.close(); } catch {}
@@ -98,10 +96,9 @@
     return false;
   }
 
-  // --- storage 广播：收到新的 ACTIVE_ID / kill 信号时，自行清理 ---
+  // --- storage 广播 ---
   window.addEventListener('storage', (ev) => {
     if (ev.key === LS_ACTIVE) {
-      // 若我们不是最新激活者且带有 fresh，立刻自关，避免累积
       if (MY_FRESH && ev.newValue && ev.newValue !== MY_FRESH) {
         LOG('inactive tab detected; closing self');
         tryCloseSelf(80);
@@ -115,7 +112,7 @@
     }
   });
 
-  // ------------- 工人循环：处理 1 个文件并接力 -------------
+  // --- 工人循环 ---
   async function workerLoop(owner){
     const ready = await waitDepsReady();
     if (!ready) { LOG('deps not ready'); releaseLock(owner); return; }
@@ -159,11 +156,9 @@
       releaseLock(owner);
     }
 
-    // 若已软停：不再接力
     const st2 = getState();
     if (!st2 || st2.running !== true) { tryCloseSelf(120); return; }
 
-    // 还有文件？开下一页并自关；没有就结束
     const left = await ST.listFiles();
     if (left && left.length) {
       const nextId = uuid();
@@ -178,7 +173,7 @@
     }
   }
 
-  // ------------- API -------------
+  // --- API ---
   async function start(opts={}){
     const st = {
       running: true,
@@ -208,12 +203,15 @@
 
   function stopHard(){
     stopSoft();
-    // 改变值以触发 storage 事件
+    // 禁用页面按钮防止 React 回调
+    document.querySelectorAll('button').forEach(btn => {
+      btn.disabled = true;
+      btn.onclick = null;
+    });
     try { localStorage.setItem(LS_KILL, JSON.stringify({ ts: now(), from: uuid() })); } catch {}
     toast('已发出紧急停止信号');
   }
 
-  // 每页加载时：不是最新 ACTIVE 且带 fresh → 自闭；否则若在跑就尝试工作
   async function maybeWorkOnLoad(){
     const active = getActive();
     if (MY_FRESH && active && active !== MY_FRESH) {
@@ -231,11 +229,10 @@
     await workerLoop(owner);
   }
 
-  // ------------- 导出 & 自启动 -------------
   global.GPTB.batch = { start, stopSoft, stopHard, maybeWorkOnLoad };
 
   try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = global.GPTB; } catch {}
-  try { console.log('[gptb] nav.batch loaded (robust close with fresh/ACTIVE_ID)'); } catch {}
+  try { console.log('[gptb] nav.batch loaded (robust close with fresh/ACTIVE_ID, delayed close)'); } catch {}
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', maybeWorkOnLoad);
