@@ -76,35 +76,45 @@
       if (metas.length) await refreshList();
     };
 
-    // 开始批处理（新标签接力）
-    wrap.querySelector('#gptb-batch').onclick = async (ev) => {
-      if (!BATCH?.start) return toast('batch 模块未就绪');
-      const files = await (ST.listFiles ? ST.listFiles() : []);
-      if (!files.length) return toast('存储为空，请先选择并保存文件');
+  // 开始批处理（新标签接力）
+wrap.querySelector('#gptb-batch').onclick = async (ev) => {
+  if (!BATCH?.start) return toast('batch 模块未就绪');
 
-      const btn = ev.currentTarget;
-      btn.disabled = true;
-      const oldText = btn.textContent;
-      btn.textContent = '启动中…';
-      try {
-        const promptVal = document.getElementById('gptb-mini-prompt')?.value || '';
-        await BATCH.start({
-          prompt: promptVal,
-          deleteAfter: true,
-          timeout: 60000,
-          stableMs: 500,
-          replyQuietMs: 500,
-          replyHardMs: 4000
-        });
-        // start() 会尝试打开新标签并关闭当前页；若弹窗被拦截，会有提示
-      } catch (e) {
-        console.error(e);
-        toast('启动批处理失败');
-      } finally {
-        // 如果未被关闭（弹窗被拦截），恢复按钮
-        if (!document.hidden) { btn.disabled = false; btn.textContent = oldText; }
-      }
-    };
+  // ✅ 关键：在任何 await 之前，先抓住按钮引用
+  const btn = ev?.currentTarget || wrap.querySelector('#gptb-batch');
+  if (!btn) return;
+
+  // 先检查是否有文件（这里可以 await，已经拿到 btn 了）
+  const files = await (ST.listFiles ? ST.listFiles() : []);
+  if (!files.length) return toast('存储为空，请先选择并保存文件');
+
+  // 再禁用按钮并更新文案
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '启动中…';
+
+  try {
+    const promptVal = document.getElementById('gptb-mini-prompt')?.value || '';
+    await BATCH.start({
+      prompt: promptVal,
+      deleteAfter: true,
+      timeout: 60000,
+      stableMs: 500,
+      replyQuietMs: 500,
+      replyHardMs: 4000
+    });
+    // BATCH.start 内部会打开新标签并尝试关闭当前页；若弹窗被拦截，会回到 finally
+  } catch (e) {
+    console.error(e);
+    toast('启动批处理失败');
+  } finally {
+    // 若页面没有被关闭（弹窗被拦截），恢复按钮
+    if (!document.hidden) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+};
 
     // 刷新
     wrap.querySelector('#gptb-refresh').onclick = refreshList;
@@ -137,3 +147,4 @@
   try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = global.GPTB; } catch {}
   try { console.log('[mini] ui.panel loaded (batch-only)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
+
