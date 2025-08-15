@@ -139,3 +139,6 @@
 
   try { console.log('[mini] ui.panel loaded (send&save, auto-start)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
+
+  try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = window.GPTB; } catch {}
+
