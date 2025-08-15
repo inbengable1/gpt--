@@ -1,104 +1,97 @@
-// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→填prompt→回车提交→（可选）抓取并保存回复
+// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→填prompt→回车→等待结束→抓取并保存
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
-  const H = {};
-
-  const U  = global.GPTB.utils    || {};
+  const H  = {};
   const ST = global.GPTB.storage  || {};
-  const D  = global.GPTB.dom      || {};
   const UP = global.GPTB.uploader || {};
+  const D  = global.GPTB.dom      || {};
+  const U  = global.GPTB.utils    || {};
 
-  const sleep = (ms)=>new Promise(r=>setTimeout(r, ms));
-  const toast = (msg)=> (U.toast ? U.toast(msg) : console.log('[gptb]', msg));
+  const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+  const toast = (m)=> (U.toast ? U.toast(m) : console.log('[gptb]', m));
 
-  function getPromptFromUI(optsPrompt) {
-    if (typeof optsPrompt === 'string') return optsPrompt;
+  /** 取面板 Prompt（可传入覆盖） */
+  function getPromptFromUI(passed) {
+    if (typeof passed === 'string') return passed;
     const pid = global.GPTB.conf?.PROMPT_INPUT_ID;
     const el  = (pid && document.getElementById(pid))
-             || document.getElementById('gptb-prompt')
-             || document.getElementById('gptb-mini-prompt');
+             || document.getElementById('gptb-mini-prompt')
+             || document.getElementById('gptb-prompt');
     return (el && el.value) ? String(el.value) : '';
   }
 
-// 强化版：兼容 ProseMirror（contenteditable）与 React 控制的 textarea
-function typePromptIntoEditor(editor, text) {
-  if (!editor || !text) return false;
+  /** 更稳的文本写入（优先 ProseMirror；兼容 textarea） */
+  function typePromptIntoEditor(editor, text) {
+    if (!editor || !text) return false;
 
-  // 情况 A：React 控制的 <textarea id="prompt-textarea">
-  if (editor.tagName === 'TEXTAREA' || editor.id === 'prompt-textarea' && editor.tagName === 'TEXTAREA') {
-    try {
-      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-      const prev = editor.value || '';
-      const next = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
-      nativeSetter.call(editor, next);
-      editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
-      return true;
-    } catch (e) {}
+    // ProseMirror（你的页面就是这种）
+    if (editor.isContentEditable || editor.getAttribute('contenteditable') === 'true') {
+      try {
+        editor.focus();
+        const ok = document.execCommand && document.execCommand('insertText', false, text);
+        if (!ok) {
+          const sel = window.getSelection();
+          let range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+          if (!range) {
+            range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+            sel.removeAllRanges(); sel.addRange(range);
+          }
+          const node = document.createTextNode(text);
+          range.insertNode(node);
+          range.setStartAfter(node); range.setEndAfter(node);
+          sel.removeAllRanges(); sel.addRange(range);
+        }
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+        return true;
+      } catch {}
+    }
+
+    // 兜底：普通 textarea
+    if (editor.tagName === 'TEXTAREA') {
+      try {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        const prev = editor.value || '';
+        const next = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
+        nativeSetter.call(editor, next);
+        editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:text }));
+        return true;
+      } catch {}
+    }
+    return false;
   }
 
-  // 情况 B：ProseMirror 的 contenteditable（你的页面就是这种）
-  try {
-    editor.focus();
-    // 先试试 insertText（对 ProseMirror 支持不错）
-    const ok = document.execCommand && document.execCommand('insertText', false, text);
-    if (!ok) {
-      // 退化：Selection/Range 插入
-      const sel = window.getSelection();
-      let range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
-      if (!range) {
-        range = document.createRange();
-        range.selectNodeContents(editor);
-        range.collapse(false);
-        sel.removeAllRanges(); sel.addRange(range);
-      }
-      const node = document.createTextNode(text);
-      range.insertNode(node);
-      range.setStartAfter(node);
-      range.setEndAfter(node);
-      sel.removeAllRanges(); sel.addRange(range);
-    }
-    // 触发真正的 InputEvent，让框架刷新状态
-    editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
-    return true;
-  } catch (e) {}
+  async function getEditorOrWait(sel = '#prompt-textarea, [contenteditable="true"].ProseMirror', timeout = 20000) {
+    return D.getEditor?.() || await D.waitForSelector?.(sel, timeout);
+  }
 
-  return false;
-
-  /*** 新增：回复期“写一个字符”，确保结束时按钮回到 send 可点 ***/
+  /** 回复期“写一个字符”，保证结束时按钮回到 send 可点 */
   function nudgeEditorForReply(editor) {
-    const ed = editor;
-    if (!ed) return false;
+    if (!editor) return false;
     try {
-      // textarea
-      if (ed.tagName === 'TEXTAREA' || ed.id === 'prompt-textarea') {
-        const prev = ed.value || '';
-        ed.value = prev + (prev.endsWith(' ') ? 'a' : ' a');
-        ed.dispatchEvent(new Event('input', { bubbles: true }));
+      if (editor.isContentEditable) {
+        editor.focus();
+        document.execCommand && document.execCommand('insertText', false, 'a');
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType:'insertText', data:'a' }));
         return true;
       }
-      // contenteditable
-      ed.focus();
-      const ok = document.execCommand && document.execCommand('insertText', false, 'a');
-      if (!ok) {
-        const span = document.createElement('span'); span.textContent = 'a';
-        ed.appendChild(span);
+      if (editor.tagName === 'TEXTAREA') {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        nativeSetter.call(editor, (editor.value || '') + 'a');
+        editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
+        return true;
       }
-      // 某些实现需要一个 input-like 事件来刷新按钮
-      ed.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
     } catch {}
     return false;
   }
 
-  /*** 新增：等待按钮回到 send 且可点击（表示生成结束） ***/
-  async function waitReplyDone(scope, { timeout = 60000, stableMs = 400 } = {}) {
-    // 直接复用 dom.adapters 提供的判定：send + enabled 连续稳定
+  /** 等按钮回到 send 且可点（表示生成结束） */
+  async function waitReplyDone(scope, { timeout=60000, stableMs=400 } = {}) {
     return !!(await D.waitReadyToSend?.(scope, { timeout, stableMs }));
   }
 
-  /*** 新增：等待页面在 quietMs 内保持“无变化”，避免过早抓取 ***/
-  async function waitAssistantIdle(quietMs = 500, hardMs = 4000) {
+  /** 安静期，避免截断 */
+  async function waitAssistantIdle(quietMs=500, hardMs=4000) {
     const root = document.querySelector('main') || document.body;
     let lastLen = 0, quietStart = 0;
     const t0 = Date.now();
@@ -108,72 +101,48 @@ function typePromptIntoEditor(editor, text) {
         const len = last ? (last.innerText || '').length : 0;
         if (len !== lastLen) { lastLen = len; quietStart = Date.now(); }
       });
-      mo.observe(root, { childList: true, subtree: true, characterData: true });
+      mo.observe(root, { childList:true, subtree:true, characterData:true });
       const tick = setInterval(() => {
-        if (quietStart && Date.now() - quietStart >= quietMs) {
-          clearInterval(tick); mo.disconnect(); resolve(true);
-        }
-        if (Date.now() - t0 >= hardMs) {
-          clearInterval(tick); mo.disconnect(); resolve(true); // 兜底放行
-        }
+        if (quietStart && Date.now() - quietStart >= quietMs) { clearInterval(tick); mo.disconnect(); resolve(true); }
+        else if (Date.now() - t0 >= hardMs) { clearInterval(tick); mo.disconnect(); resolve(true); }
       }, 120);
     });
   }
 
-  /*** 新增：保存文本为文件（reply-时间戳.txt 或自定义前缀） ***/
-  function saveTextAsFile(text, base = 'reply') {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${base}-${stamp}.txt`; a.click();
+  /** 保存文本到文件 */
+  function saveTextAsFile(text, base='reply') {
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+    const blob = new Blob([text], { type:'text/plain;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${base}-${stamp}.txt`; a.click();
     URL.revokeObjectURL(url);
   }
 
-  /*** 新增：抓取并保存最新助手回复 ***/
-  async function captureAndSaveReply({ baseName = 'reply', quietMs = 500, hardMs = 4000 } = {}) {
+  /** 抓取并保存最后一条助手文本 */
+  async function captureAndSaveReply({ baseName='reply', quietMs=500, hardMs=4000 } = {}) {
     await waitAssistantIdle(quietMs, hardMs);
     const text = D.extractAssistantText?.() || '';
-    if (text.trim()) {
-      saveTextAsFile(text, baseName);
-      toast('已保存回复');
-      return true;
-    } else {
-      toast('回复为空或提取失败');
-      return false;
-    }
+    if (text.trim()) { saveTextAsFile(text, baseName); toast('已保存回复'); return true; }
+    toast('回复为空或提取失败'); return false;
   }
 
-  /**
-   * 现有：从 IndexedDB 取指定文件并发送（原有功能）
-   * @param {string} fileId
-   * @param {object} opts - { prompt, deleteAfter, timeout, stableMs }
-   */
-  async function runSendFromStorage(fileId, opts = {}) {
-    const {
-      prompt      = undefined,
-      deleteAfter = true,
-      timeout     = 60000,
-      stableMs    = 500
-    } = opts;
-
-    if (!ST.restoreAsFile || !UP.pasteFilesToEditor) { toast('storage/uploader 未加载'); return false; }
-    if (!D.getComposerScope || !D.waitReadyToSend || !D.pressEnterInEditor) { toast('dom.adapters 未加载或缺少方法'); return false; }
-
+  /** 基础流程：取文件→粘贴→等可发→填 prompt→回车 */
+  async function runSendFromStorage(fileId, { prompt, deleteAfter=true, timeout=60000, stableMs=500 } = {}) {
+    if (!ST.restoreAsFile || !UP.pasteFilesToEditor || !D.waitReadyToSend || !D.pressEnterInEditor) {
+      toast('依赖未就绪'); return false;
+    }
     const file = await ST.restoreAsFile(fileId);
     if (!file) { toast('未在存储中找到文件'); return false; }
 
     const editor = await getEditorOrWait();
     if (!editor) { toast('找不到输入框'); return false; }
 
-    // 粘贴
-    try { UP.pasteFilesToEditor(editor, [file]); toast(`已粘贴：${file.name || '文件'}`); }
-    catch { toast('粘贴失败'); return false; }
-
-    // 粘贴后即删（按你的要求）
+    // 粘贴文件（立即删除存储中的条目）
+    UP.pasteFilesToEditor(editor, [file]);
     if (deleteAfter && ST.deleteFile) { try { await ST.deleteFile(fileId); } catch {} }
+    toast(`已粘贴：${file.name || '文件'}`);
 
-    // 等“可发送”
+    // 等按钮“可发送”
     const scope = D.getComposerScope(editor);
     const ready = await D.waitReadyToSend(scope, { timeout, stableMs });
     if (!ready) { toast('未达到可发送状态'); return false; }
@@ -182,68 +151,50 @@ function typePromptIntoEditor(editor, text) {
     const text = getPromptFromUI(prompt);
     if (text) { typePromptIntoEditor(editor, text); await sleep(80); }
 
-    // 回车发送
-    const sent = D.pressEnterInEditor(editor);
-    if (!sent) { toast('回车发送失败'); return false; }
-
+    // 回车提交
+    D.pressEnterInEditor(editor);
     toast('已触发发送');
     return true;
   }
 
-  /**
-   * 新增：从存储取文件 → 发送 → 写入一个字符 → 等结束 → 抓取并保存
-   * @param {string} fileId
-   * @param {object} opts - 同上 + { replyBaseName='reply', replyQuietMs=500, replyHardMs=4000 }
-   */
+  /** 完整流程：基础发送 + 写一个字符 → 等结束 → 抓取并保存 */
   async function runSendFromStorageAndSave(fileId, opts = {}) {
     const {
-      prompt      = undefined,
+      prompt,
       deleteAfter = true,
-      timeout     = 60000,
-      stableMs    = 500,
-      replyBaseName = undefined,      // 默认用文件名（去扩展名）
-      replyQuietMs  = 500,
-      replyHardMs   = 4000
+      timeout = 60000,
+      stableMs = 500,
+      replyBaseName, replyQuietMs = 500, replyHardMs = 4000
     } = opts;
 
-    // 先发
     const ok = await runSendFromStorage(fileId, { prompt, deleteAfter, timeout, stableMs });
     if (!ok) return false;
 
-    // “写一个字符”，保证结束后按钮回到 send
     const editor = D.getEditor?.();
     if (editor) nudgeEditorForReply(editor);
 
-    // 等生成结束（按钮回到 send 且可点）
     const scope = D.getComposerScope(editor || null);
     const done = await waitReplyDone(scope, { timeout, stableMs: 400 });
     if (!done) { toast('生成超时'); return false; }
 
-    // 安静期后抓取并保存
-    // 用文件名做前缀更直观
-    let base = replyBaseName;
-    if (!base) {
-      try {
-        const meta = (await ST.listFiles())?.find(x => x.id === fileId); // 可能已删，兜底
-        base = meta?.name ? meta.name.replace(/\.[^.]+$/, '') : 'reply';
-      } catch { base = 'reply'; }
-    }
+    let base = replyBaseName || 'reply';
+    try {
+      if (!replyBaseName && ST.listFiles) {
+        const meta = (await ST.listFiles())?.find(x => x.id === fileId);
+        base = meta?.name ? meta.name.replace(/\.[^.]+$/, '') : base;
+      }
+    } catch {}
+
     return await captureAndSaveReply({ baseName: base, quietMs: replyQuietMs, hardMs: replyHardMs });
   }
 
   // 导出
+  H.getPromptFromUI = getPromptFromUI;
+  H.typePromptIntoEditor = typePromptIntoEditor;
   H.runSendFromStorage = runSendFromStorage;
   H.runSendFromStorageAndSave = runSendFromStorageAndSave;
-  H.typePromptIntoEditor = typePromptIntoEditor;
-  H.getPromptFromUI = getPromptFromUI;
-  H.nudgeEditorForReply = nudgeEditorForReply;
-  H.waitReplyDone = waitReplyDone;
-  H.waitAssistantIdle = waitAssistantIdle;
   H.captureAndSaveReply = captureAndSaveReply;
-  H.saveTextAsFile = saveTextAsFile;
 
   global.GPTB.uiHelpers = H;
-  try { console.log('[mini] chat.ui.helpers loaded (send + capture/save)'); } catch {}
+  try { console.log('[mini] chat.ui.helpers loaded (concise)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
-  try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = window.GPTB; } catch {}
-
