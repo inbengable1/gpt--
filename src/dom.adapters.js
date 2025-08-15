@@ -142,3 +142,5 @@
 
   try { console.log('[mini] dom.adapters loaded (+button state +pressEnter)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
+  try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = window.GPTB; } catch {}
+
