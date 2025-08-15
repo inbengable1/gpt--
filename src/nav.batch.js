@@ -1,15 +1,19 @@
-// nav.batch.js — 跨标签页批处理：每页处理 1 个文件 → 开新页 → 关旧页
+// nav.batch.js — 跨标签页批处理：每页处理 1 个文件 → 开新页 → 关旧页 + 停止/紧急停止
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
 
   const LS_STATE = 'GPTB_BATCH_STATE';
   const LS_LOCK  = 'GPTB_BATCH_LOCK';
+  const LS_KILL  = 'GPTB_BATCH_KILL';      // 广播硬停
   const CHAT_URL = 'https://chatgpt.com/?temporary-chat=true';
-  const LOCK_TTL_MS = 180000; // 3 分钟，足够一次对话（可在 conf 里覆盖）
-  const WAIT_READY_MS = 3000; // 最多等 3s 让依赖加载
+
+  const LOCK_TTL_MS = 180000;  // 3 分钟
+  const WAIT_READY_MS = 3000;  // 依赖就绪等待
   const LOG = (...a)=>{ try{ console.log('[gptb/batch]', ...a);}catch{} };
   const toast = (m)=> (global.GPTB.utils?.toast ? global.GPTB.utils.toast(m) : LOG(m));
+
+  let CURRENT_OWNER = null;    // 当前页持有的锁 owner（便于硬停时释放）
 
   // ---- 工具：状态 & 锁 ----
   function readJSON(key){ try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } }
@@ -25,6 +29,7 @@
     if (!l || (l.expiresAt && l.expiresAt < now())) {
       writeJSON(LS_LOCK, { owner, expiresAt: now() + LOCK_TTL_MS });
       LOG('lock acquired by', owner);
+      CURRENT_OWNER = owner;
       return true;
     }
     LOG('lock busy by', l.owner);
@@ -39,6 +44,7 @@
     if (!l || l.owner === owner || (l.expiresAt && l.expiresAt < now())) {
       try { localStorage.removeItem(LS_LOCK); } catch {}
       LOG('lock released by', owner);
+      if (CURRENT_OWNER === owner) CURRENT_OWNER = null;
       return true;
     }
     return false;
@@ -52,12 +58,9 @@
     }
     return true;
   }
-  function closeSelfSoon() {
-    // 某些浏览器需要延迟一下
-    setTimeout(() => { try { window.close(); } catch {} }, 50);
-  }
+  function closeSelfSoon() { setTimeout(() => { try { window.close(); } catch {} }, 50); }
 
-  // ---- 等依赖就绪（storage / uiHelpers / dom） ----
+  // ---- 依赖就绪 ----
   async function waitDepsReady(ms = WAIT_READY_MS) {
     const t0 = now();
     while (now() - t0 < ms) {
@@ -73,6 +76,19 @@
     return false;
   }
 
+  // ---- 硬停广播监听：任一标签触发后，当前页立即终止并尝试关闭 ----
+  window.addEventListener('storage', (ev) => {
+    if (ev.key === LS_KILL && ev.newValue) {
+      LOG('kill signal received');
+      try { releaseLock(CURRENT_OWNER); } catch {}
+      try { window.stop?.(); } catch {}
+      try { global.GPTB.utils?.toast?.('批处理已紧急停止'); } catch {}
+      // 立即跳空页并尝试关闭
+      try { location.replace('about:blank'); } catch {}
+      closeSelfSoon();
+    }
+  });
+
   // ---- 工人：处理一个文件并接力 ----
   async function workerLoop(owner) {
     const ready = await waitDepsReady();
@@ -81,15 +97,17 @@
     const ST  = global.GPTB.storage;
     const UIH = global.GPTB.uiHelpers;
 
+    // 若已被软停，直接退出
+    const st0 = getState();
+    if (!st0 || st0.running !== true) { LOG('stopped before work'); releaseLock(owner); return; }
+
     // 取当前队首
     const all = await ST.listFiles();
     if (!all || !all.length) {
-      // 队列空：终止批处理
       const st = getState() || {};
       st.running = false; setState(st);
       releaseLock(owner);
       toast('批处理完成（无待处理文件）');
-      // 不再开新页，仅关闭自己
       closeSelfSoon();
       return;
     }
@@ -101,12 +119,11 @@
 
     LOG(`processing #${seq}:`, file.name || file.id);
 
-    // 处理 1 个文件
     try {
-      refreshLock(owner); // 刷新锁以覆盖长任务
+      refreshLock(owner);
       await UIH.runSendFromStorageAndSave(file.id, {
         prompt: st.prompt || '',
-        deleteAfter: st.deleteAfter !== false, // 默认 true
+        deleteAfter: st.deleteAfter !== false,
         timeout: st.timeout || 60000,
         stableMs: st.stableMs || 500,
         replyQuietMs: st.replyQuietMs || 500,
@@ -118,27 +135,28 @@
       releaseLock(owner);
     }
 
+    // 若软停了，不再接力
+    const st2 = getState();
+    if (!st2 || st2.running !== true) { LOG('stopped after work'); closeSelfSoon(); return; }
+
     // 看看是否还有文件
     const left = await ST.listFiles();
     if (left && left.length) {
-      // 还有文件：开下一页接力，关自己
       const ok = openNextTabOrWarn();
       if (ok) closeSelfSoon();
     } else {
-      // 没有文件：结束批处理并关自己
-      const st2 = getState() || {};
-      st2.running = false; setState(st2);
+      const st3 = getState() || {};
+      st3.running = false; setState(st3);
       closeSelfSoon();
     }
   }
 
-  // ---- API：启动批处理（在 UI 按钮中调用） ----
+  // ---- API：启动/停止 ----
   async function start(opts = {}) {
-    // 写运行状态
     const st = {
       running: true,
       prompt: opts.prompt || '',
-      deleteAfter: opts.deleteAfter !== false, // 默认 true
+      deleteAfter: opts.deleteAfter !== false,
       timeout: opts.timeout || 60000,
       stableMs: opts.stableMs || 500,
       replyQuietMs: opts.replyQuietMs || 500,
@@ -148,9 +166,23 @@
     };
     setState(st);
 
-    // 打开第一张临时页
     const ok = openNextTabOrWarn();
     if (ok) closeSelfSoon();
+  }
+
+  // 软停：不再接力，当前页完成后结束
+  function stopSoft() {
+    const st = getState() || {};
+    st.running = false;
+    setState(st);
+    toast('批处理已停止（本页执行完即结束）');
+  }
+
+  // 硬停：立即广播终止，当前页尽快关闭
+  function stopHard() {
+    stopSoft(); // 先把 running 置 false
+    writeJSON(LS_KILL, { ts: now(), from: uuid() }); // 唯一值才能触发 storage 事件
+    toast('已发送紧急停止信号');
   }
 
   // ---- API：在每个页面加载时调用（自动工人） ----
@@ -160,29 +192,23 @@
 
     const owner = 'tab-' + uuid();
 
-    // 抢锁（如果忙，就安静退出或直接自关）
     if (!acquireLock(owner)) {
-      // 这里选择直接安静退出；必要时也可以 setTimeout 再试
       LOG('lock not acquired, exit');
       return;
     }
 
-    // 真正开工：处理 1 个文件
     await workerLoop(owner);
   }
 
   // ---- 导出 & 自启动 ----
-  global.GPTB.batch = { start, maybeWorkOnLoad };
+  global.GPTB.batch = { start, stopSoft, stopHard, maybeWorkOnLoad };
 
-  // 让控制台可直接访问（沙箱桥接）
   try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = global.GPTB; } catch {}
-  try { console.log('[gptb] nav.batch loaded'); } catch {}
+  try { console.log('[gptb] nav.batch loaded (stop/kill supported)'); } catch {}
 
-  // 页面就绪后尝试工作（不影响普通使用）
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', maybeWorkOnLoad);
   } else {
-    // 延迟一点，等其它模块先挂好
     setTimeout(maybeWorkOnLoad, 50);
   }
 
