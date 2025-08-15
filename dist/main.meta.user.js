@@ -9,7 +9,11 @@
 // @noframes
 // @grant        GM_registerMenuCommand
 // @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/conf.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/dom.adapters.js
 // @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/utils.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/storage.idb.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/uploader.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/chat.ui.helpers.js
+// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/nav.batch.js
 // @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/ui.panel.js
-// @require      https://raw.githubusercontent.com/inbengable1/gpt--/main/src/control.runner.js
 // ==/UserScript==
