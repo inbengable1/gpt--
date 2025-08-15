@@ -1,4 +1,4 @@
-// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→填prompt→回车→等待结束→抓取并保存（精简版）
+// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→覆盖写入 prompt→回车→（延时）插入'a'→等待结束→抓取并保存
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
@@ -9,9 +9,9 @@
   const U  = global.GPTB.utils    || {};
 
   const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-  const toast = (m)=> (U.toast ? U.toast(m) : console.log('[gptb]', m));
+  const toast = (m)=> (U?.toast ? U.toast(m) : console.log('[gptb]', m));
 
-  // 读取面板里的 Prompt（可传入覆盖）
+  /** 读取面板里的 Prompt（可传入覆盖） */
   function getPromptFromUI(passed) {
     if (typeof passed === 'string') return passed;
     const pid = global.GPTB.conf?.PROMPT_INPUT_ID;
@@ -21,43 +21,56 @@
     return el?.value ? String(el.value) : '';
   }
 
-  // 写入编辑器文本：优先 ProseMirror（contenteditable），textarea 兜底
-  function typePromptIntoEditor(editor, text) {
-    if (!editor || !text) return false;
+  /** 清空编辑器内容（ProseMirror 优先，textarea 兜底） */
+  function clearEditor(editor) {
+    if (!editor) return;
+    try { editor.focus(); } catch {}
+    if (editor.isContentEditable || editor.getAttribute?.('contenteditable') === 'true') {
+      const sel = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      sel.removeAllRanges(); sel.addRange(range);
+      if (document.execCommand) document.execCommand('delete', false, null);
+      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'deleteContentBackward' }));
+      return;
+    }
+    if (editor.tagName === 'TEXTAREA') {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(editor, '');
+      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'deleteContentBackward' }));
+    }
+  }
 
-    // ProseMirror
-    if (editor.isContentEditable || editor.getAttribute('contenteditable') === 'true') {
-      try {
-        editor.focus();
-        const ok = document.execCommand && document.execCommand('insertText', false, text);
-        if (!ok) {
-          const sel = getSelection();
-          let range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
-          if (!range) {
-            range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
-            sel.removeAllRanges(); sel.addRange(range);
-          }
-          const node = document.createTextNode(text);
-          range.insertNode(node);
-          range.setStartAfter(node); range.setEndAfter(node);
-          sel.removeAllRanges(); sel.addRange(range);
-        }
-        editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
-        return true;
-      } catch {}
+  /** 覆盖写入文本到编辑器：ProseMirror 优先，textarea 兜底（默认覆盖） */
+  function typePromptIntoEditor(editor, text, { overwrite = true } = {}) {
+    if (!editor || !text) return false;
+    try { editor.focus(); } catch {}
+    if (overwrite) clearEditor(editor);
+
+    // ProseMirror（contenteditable）
+    if (editor.isContentEditable || editor.getAttribute?.('contenteditable') === 'true') {
+      const ok = document.execCommand && document.execCommand('insertText', false, text);
+      if (!ok) {
+        const sel = getSelection();
+        let range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+        if (!range) { range = document.createRange(); range.selectNodeContents(editor); range.collapse(false); sel.removeAllRanges(); sel.addRange(range); }
+        const node = document.createTextNode(text);
+        range.insertNode(node);
+        range.setStartAfter(node); range.setEndAfter(node);
+        sel.removeAllRanges(); sel.addRange(range);
+      }
+      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:text }));
+      return true;
     }
 
     // textarea 兜底
     if (editor.tagName === 'TEXTAREA') {
-      try {
-        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-        const prev = editor.value || '';
-        const next = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
-        nativeSetter.call(editor, next);
-        editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:text }));
-        return true;
-      } catch {}
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(editor, text);
+      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:text }));
+      return true;
     }
+
     return false;
   }
 
@@ -65,18 +78,18 @@
     return D.getEditor?.() || await D.waitForSelector?.(sel, timeout);
   }
 
-  // 回复期写入一个字符，确保结束时按钮能回到 send 可点
+  /**（内部）向编辑器插入一个字符 'a'，并触发 input 事件 */
   function nudgeEditorForReply(editor) {
     try {
-      if (editor?.isContentEditable) {
+      if (editor?.isContentEditable || editor?.getAttribute?.('contenteditable') === 'true') {
         editor.focus();
-        document.execCommand && document.execCommand('insertText', false, 'a');
-        editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType:'insertText', data:'a' }));
+        if (document.execCommand) document.execCommand('insertText', false, 'a');
+        editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
         return true;
       }
       if (editor?.tagName === 'TEXTAREA') {
-        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-        nativeSetter.call(editor, (editor.value || '') + 'a');
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(editor, (editor.value || '') + 'a');
         editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
         return true;
       }
@@ -84,12 +97,19 @@
     return false;
   }
 
-  // 按钮回到 send 且可点（表示生成结束）
+  /** 只在“回车发送后”延时插入一次 'a'（其它地方不插） */
+  async function delayNudgeAfterEnter(editor, delay = 300) {
+    if (!editor) return false;
+    await sleep(delay);
+    return nudgeEditorForReply(editor);
+  }
+
+  /** 等按钮回到 send 且可点（表示生成结束） */
   async function waitReplyDone(scope, { timeout=60000, stableMs=400 } = {}) {
     return !!(await D.waitReadyToSend?.(scope, { timeout, stableMs }));
   }
 
-  // 短安静期，避免截断抓取
+  /** 短安静期，避免截断抓取 */
   async function waitAssistantIdle(quietMs=500, hardMs=4000) {
     const root = document.querySelector('main') || document.body;
     let lastLen = 0, quietStart = 0;
@@ -108,7 +128,7 @@
     });
   }
 
-  // 保存文本为文件（base-ISO时间戳.txt）
+  /** 保存文本为文件（base-ISO时间戳.txt） */
   function saveTextAsFile(text, base='reply') {
     const stamp = new Date().toISOString().replace(/[:.]/g,'-');
     const blob  = new Blob([text], { type:'text/plain;charset=utf-8' });
@@ -117,7 +137,7 @@
     URL.revokeObjectURL(url);
   }
 
-  // 抓取并保存助手回复
+  /** 抓取并保存助手回复（使用 dom.extractAssistantText） */
   async function captureAndSaveReply({ baseName='reply', quietMs=500, hardMs=4000 } = {}) {
     await waitAssistantIdle(quietMs, hardMs);
     const text = D.extractAssistantText?.() || '';
@@ -125,7 +145,7 @@
     toast('回复为空或提取失败'); return false;
   }
 
-  // 基础发送：取文件→粘贴→等可发→填 prompt→回车
+  /** 基础发送：取文件→粘贴→等可发→覆盖写入 prompt→回车 */
   async function runSendFromStorage(fileId, { prompt, deleteAfter=true, timeout=60000, stableMs=500 } = {}) {
     if (!ST.restoreAsFile || !UP.pasteFilesToEditor || !D.waitReadyToSend || !D.pressEnterInEditor) {
       toast('依赖未就绪'); return false;
@@ -136,53 +156,61 @@
     const editor = await getEditorOrWait();
     if (!editor) { toast('找不到输入框'); return false; }
 
-    // 粘贴并删除存储条目
+    // 仅粘贴文件，不做任何 'a' 注入
     UP.pasteFilesToEditor(editor, [file]);
+
+    // 贴完即可删除存储条目（按你的要求）
     if (deleteAfter && ST.deleteFile) { try { await ST.deleteFile(fileId); } catch {} }
     toast(`已粘贴：${file.name || '文件'}`);
 
-    // 等按钮可发
+    // 等按钮“可发送”
     const scope = D.getComposerScope(editor);
     const ready = await D.waitReadyToSend(scope, { timeout, stableMs });
     if (!ready) { toast('未达到可发送状态'); return false; }
 
-    // 写 prompt → 回车
+    // 覆盖写入 prompt（避免任何残留字符）
     const text = getPromptFromUI(prompt);
-    if (text) { typePromptIntoEditor(editor, text); await sleep(80); }
+    if (text) { typePromptIntoEditor(editor, text, { overwrite: true }); await sleep(80); }
+
+    // 回车提交（真正触发发送）
     D.pressEnterInEditor(editor);
     toast('已触发发送');
     return true;
   }
 
-  // 完整：发送 + 写一个字符 → 等结束 → 抓取并保存（保存名按上传文件命名）
+  /** 完整：发送 →（延时）插入 'a' → 等结束 → 抓取并保存（保存名按上传文件命名） */
   async function runSendFromStorageAndSave(fileId, opts = {}) {
     const {
       prompt,
       deleteAfter = true,
       timeout = 60000,
       stableMs = 500,
-      replyQuietMs = 500, replyHardMs = 4000
+      replyQuietMs = 500,
+      replyHardMs = 4000
     } = opts;
 
-    // 先读取一次文件名作为保存前缀
+    // 发送前先取一次名称用于保存前缀
     let base = 'reply';
     try {
-      const f = await ST.restoreAsFile(fileId);
-      if (f?.name) base = f.name.replace(/\.[^.]+$/, '') || base;
+      const metas = await ST.listFiles();
+      const m = metas?.find(x => x.id === fileId);
+      if (m?.name) base = m.name.replace(/\.[^.]+$/, '') || base;
     } catch {}
 
-    // 执行基础发送
+    // 执行基础发送（此处不插 'a'）
     const ok = await runSendFromStorage(fileId, { prompt, deleteAfter, timeout, stableMs });
     if (!ok) return false;
 
-    // 写一个字符 → 等结束
+    // 回车之后，延时仅插一次 'a'
     const editor = D.getEditor?.();
-    if (editor) nudgeEditorForReply(editor);
+    if (editor) await delayNudgeAfterEnter(editor, 300);
+
+    // 等到按钮回到 send（生成结束）
     const scope = D.getComposerScope(editor || null);
     const done = await waitReplyDone(scope, { timeout, stableMs: 400 });
     if (!done) { toast('生成超时'); return false; }
 
-    // 抓取并保存（文件名按上传文件）
+    // 抓取并保存
     return await captureAndSaveReply({ baseName: base, quietMs: replyQuietMs, hardMs: replyHardMs });
   }
 
@@ -196,8 +224,8 @@
   };
   global.GPTB.uiHelpers = H;
 
-  // 日志 + 桥接，便于控制台调试
-  try { console.log('[mini] chat.ui.helpers loaded (concise + use upload name)'); } catch {}
+  // 控制台桥接
   try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = global.GPTB; } catch {}
+  try { console.log('[mini] chat.ui.helpers loaded (enter-delay-nudge + overwrite)'); } catch {}
 
 })(typeof window !== 'undefined' ? window : this);
