@@ -197,4 +197,4 @@
 
   global.GPTB.uiHelpers = H;
   try { console.log('[mini] chat.ui.helpers loaded (concise)'); } catch {}
-})(typeof window !== 'undefined' ? window : this);
+})(typeof window == 'undefined' ? window : this);
