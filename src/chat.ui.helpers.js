@@ -1,169 +1,145 @@
-// chat.ui.helpers.js — ChatGPT 发送/停止按钮 & 发送策略（基于 GPTB.dom.getComposerScope）
-// 依赖：GPTB.utils.sleep、GPTB.dom.getComposerScope、（可选）GPTB.conf.{QUIET_MS,UPLOAD_READY_TIMEOUT_MS,SEND_ACCEPT_TIMEOUT_MS}
+// chat.ui.helpers.js — 从存储取文件→粘贴→等待可发→填prompt→回车提交（适配 GPTB）
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
   const H = {};
 
-  const C = Object.assign({
-    QUIET_MS: 500,
-    UPLOAD_READY_TIMEOUT_MS: 60000,
-    SEND_ACCEPT_TIMEOUT_MS: 3000
-  }, (global.GPTB.conf || {}));
+  // 依赖（存在就用；缺了会在运行时报友好提示）
+  const U  = global.GPTB.utils   || {};
+  const ST = global.GPTB.storage || {};
+  const D  = global.GPTB.dom     || {};
+  const UP = global.GPTB.uploader|| {};
 
-  const U = global.GPTB.utils || {
-    sleep: (ms)=>new Promise(r=>setTimeout(r,ms))
-  };
+  // -------- 小工具 --------
+  const sleep = (ms)=>new Promise(r=>setTimeout(r, ms));
+  const toast = (msg)=> (U.toast ? U.toast(msg) : console.log('[gptb]', msg));
 
-  // —— 定位按钮（在 composer 作用域内查找）——
-  function querySendStopButtonInScope(scope) {
-    const root = scope || document;
-    // 尽量覆盖常见 DOM 变体
-    return (
-      root.querySelector('#composer-submit-button') ||
-      root.querySelector('button[data-testid="send-button"]') ||
-      root.querySelector('button[data-testid="stop-button"]') ||
-      root.querySelector('button[aria-label*="Send"]') ||
-      root.querySelector('button[aria-label*="Stop"]') ||
-      root.querySelector('button[type="submit"]') ||
-      null
-    );
+  function getPromptFromUI(optsPrompt) {
+    if (typeof optsPrompt === 'string') return optsPrompt;
+    // 优先自定义 ID（若你在 conf 里定义了 PROMPT_INPUT_ID）
+    const pid = global.GPTB.conf?.PROMPT_INPUT_ID;
+    const el  = (pid && document.getElementById(pid))
+             || document.getElementById('gptb-prompt')
+             || document.getElementById('gptb-mini-prompt');
+    return (el && el.value) ? String(el.value) : '';
   }
 
-  // —— 判定模式：send / stop / unknown ——
-  function buttonMode(btn) {
-    if (!btn) return 'unknown';
-    const tid  = (btn.getAttribute('data-testid')  || '').toLowerCase();
-    const aria = (btn.getAttribute('aria-label')   || '').toLowerCase();
-    const txt  = (btn.textContent || '').toLowerCase();
-    if (tid.includes('stop') || aria.includes('stop') || txt.includes('stop') || aria.includes('停止')) return 'stop';
-    if (tid.includes('send') || aria.includes('send') || txt.includes('send') || aria.includes('发送')) return 'send';
-    return 'unknown';
-  }
+  // 在编辑器里写入文本：兼容 textarea(#prompt-textarea) & ProseMirror(contenteditable)
+  function typePromptIntoEditor(editor, text) {
+    if (!editor || !text) return false;
 
-  // —— 判定可点击：未禁用、未 busy、可见且有尺寸 ——
-  function buttonEnabled(btn) {
-    if (!btn) return false;
-    if (btn.disabled) return false;
-    if (btn.getAttribute('aria-disabled') === 'true') return false;
-    if (btn.getAttribute('aria-busy') === 'true') return false;
-    const r = btn.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    // 周围容器处于 loading/busy 也视为不可点击
-    if (btn.closest('[aria-busy="true"], [data-state*="loading"], [data-loading="true"]')) return false;
-    // display:none（offsetParent 为 null）
-    if (btn.offsetParent === null) return false;
-    return true;
-  }
-
-  // —— 等待按钮满足指定状态（模式 & 可用性），超时返回 null ——
-  async function waitButton(scope, wantMode = null, wantEnabled = null, timeoutMs = 20000) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeoutMs) {
-      const btn = querySendStopButtonInScope(scope);
-      const okMode = (wantMode == null) || (buttonMode(btn) === wantMode);
-      const okEn   = (wantEnabled == null) || (buttonEnabled(btn) === wantEnabled);
-      if (btn && okMode && okEn) return btn;
-      await U.sleep(120);
+    // 1) 如果是 textarea（#prompt-textarea）
+    if (editor.tagName === 'TEXTAREA' || editor.id === 'prompt-textarea') {
+      try {
+        const ta = editor;
+        const prev = ta.value || '';
+        ta.focus();
+        ta.value = prev ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text;
+        // 触发 input 让发送按钮刷新状态
+        const ev = new Event('input', { bubbles: true });
+        ta.dispatchEvent(ev);
+        return true;
+      } catch (e) {}
     }
-    return null;
-  }
 
-  // —— 上传完成 & 可发送：等待 send+enabled 连续稳定 stableMs（默认 500ms） ——
-  async function waitReadyToSend(scope, { timeout = C.UPLOAD_READY_TIMEOUT_MS, stableMs = C.QUIET_MS } = {}) {
-    const t0 = Date.now();
-    let stableStart = 0;
-    while (Date.now() - t0 < timeout) {
-      const btn = querySendStopButtonInScope(scope);
-      const ok = btn && buttonMode(btn) === 'send' && buttonEnabled(btn);
-      if (ok) {
-        if (!stableStart) stableStart = Date.now();
-        if (Date.now() - stableStart >= (stableMs || 0)) return true; // 连续稳定
-      } else {
-        stableStart = 0;
+    // 2) contenteditable（ProseMirror）
+    try {
+      editor.focus();
+      // 优先使用 insertText（更接近用户输入）
+      const ok = document.execCommand && document.execCommand('insertText', false, text);
+      if (!ok) {
+        // 退化：直接追加到末尾
+        const span = document.createElement('span');
+        span.textContent = text;
+        editor.appendChild(span);
       }
-      await U.sleep(120);
-    }
+      return true;
+    } catch (e) {}
+
     return false;
   }
 
-  // —— 基于“按钮状态”的上传完成等待（与旧版命名保持兼容） ——
-  async function waitUploadReadyByButton(editor, timeout = C.UPLOAD_READY_TIMEOUT_MS) {
-    const scope = (global.GPTB.dom && global.GPTB.dom.getComposerScope && global.GPTB.dom.getComposerScope(editor)) || document;
-    return waitReadyToSend(scope, { timeout, stableMs: C.QUIET_MS });
+  async function getEditorOrWait(sel = '#prompt-textarea', timeout = 20000) {
+    const ed = D.getEditor?.();
+    if (ed) return ed;
+    return await D.waitForSelector?.(sel, timeout);
   }
 
-  // —— 回车发送（比点击更稳） ——
-  function pressEnterInEditor(editor) {
-    if (!editor) return false;
-    try { editor.focus(); } catch {}
-    const opts = { bubbles:true, cancelable:true, key:'Enter', code:'Enter', keyCode:13, which:13 };
-    editor.dispatchEvent(new KeyboardEvent('keydown',  opts));
-    editor.dispatchEvent(new KeyboardEvent('keypress', opts));
-    editor.dispatchEvent(new KeyboardEvent('keyup',    opts));
+  // -------- 主流程：从存储取文件→粘贴→（可选删库）→等待可发→填prompt→回车 --------
+  /**
+   * 从 IndexedDB 取指定文件并发送。
+   * @param {string} fileId - 存储里的文件 ID
+   * @param {object} opts
+   *   - prompt {string} 可选，覆盖从 UI 取的 prompt
+   *   - deleteAfter {boolean} 默认 true，粘贴后即删除存储的该文件
+   *   - timeout {number} 等待「可发送」的超时，默认 60000ms
+   *   - stableMs {number} 状态稳定期，默认 500ms
+   * @returns {boolean} 是否成功触发发送
+   */
+  async function runSendFromStorage(fileId, opts = {}) {
+    const {
+      prompt      = undefined,
+      deleteAfter = true,
+      timeout     = 60000,
+      stableMs    = 500
+    } = opts;
+
+    // 0) 依赖检查
+    if (!ST.restoreAsFile || !UP.pasteFilesToEditor) {
+      toast('上传/存储依赖缺失（storage/uploader 未加载）');
+      return false;
+    }
+    if (!D.getComposerScope || !D.waitReadyToSend || !D.pressEnterInEditor) {
+      toast('DOM 适配依赖缺失（dom.adapters 未加载或缺少必要方法）');
+      return false;
+    }
+
+    // 1) 取文件
+    const file = await ST.restoreAsFile(fileId);
+    if (!file) { toast('未在存储中找到文件'); return false; }
+
+    // 2) 找编辑器并粘贴
+    const editor = await getEditorOrWait();
+    if (!editor) { toast('找不到输入框'); return false; }
+    try {
+      UP.pasteFilesToEditor(editor, [file]);
+      toast(`已粘贴：${file.name || '文件'}`);
+    } catch (e) {
+      toast('粘贴失败'); return false;
+    }
+
+    // 3) （可选）删除存储中的该文件
+    if (deleteAfter && ST.deleteFile) {
+      try { await ST.deleteFile(fileId); } catch (_) {}
+    }
+
+    // 4) 等待按钮「可发送」稳定
+    const scope = D.getComposerScope(editor);
+    const ready = await D.waitReadyToSend(scope, { timeout, stableMs });
+    if (!ready) { toast('未达到可发送状态'); return false; }
+
+    // 5) 写入 prompt（从 UI 读取或 opts.prompt）
+    const text = getPromptFromUI(prompt);
+    if (text) {
+      const ok = typePromptIntoEditor(editor, text);
+      if (!ok) toast('写入提示词失败');
+      // 写入后稍等一下，让按钮状态/内部模型刷新
+      await sleep(80);
+    }
+
+    // 6) 回车提交（更稳）
+    const sent = D.pressEnterInEditor(editor);
+    if (!sent) { toast('回车发送失败'); return false; }
+
+    toast('已触发发送');
     return true;
   }
 
-  // —— 一条龙：等待可发送 → 回车提交 ——
-  async function waitAndSubmitByEnter(scope, editor, { timeout=C.UPLOAD_READY_TIMEOUT_MS, stableMs=C.QUIET_MS } = {}) {
-    const ok = await waitReadyToSend(scope, { timeout, stableMs });
-    if (!ok) return false;
-    return pressEnterInEditor(editor);
-  }
-
-  // —— 点击发送（备用方案）：点击后短时间内应切到 stop ——
-  async function clickSend(scope) {
-    const btn = querySendStopButtonInScope(scope);
-    if (!btn) return false;
-    btn.click();
-    const switched = await waitButton(scope, 'stop', null, C.SEND_ACCEPT_TIMEOUT_MS);
-    return !!switched;
-  }
-
-  // —— 综合发送接口：优先回车；如需可选 method:'click' ——
-  async function trySend(scope, editor, { method = 'enter', timeout=C.UPLOAD_READY_TIMEOUT_MS, stableMs=C.QUIET_MS } = {}) {
-    if (method === 'click') {
-      const ok = await waitReadyToSend(scope, { timeout, stableMs });
-      if (!ok) return false;
-      return clickSend(scope);
-    }
-    // 默认：回车策略
-    return waitAndSubmitByEnter(scope, editor, { timeout, stableMs });
-  }
-
-  // —— 等助手生成后“安静一段时间”（避免截断提取） ——
-  async function waitAssistantIdle(quietMs = C.QUIET_MS, maxMs = 4000) {
-    const root = document.querySelector('main') || document.body;
-    let last = root.innerText.length;
-    let stillStart = 0;
-    const t0 = Date.now();
-    while (Date.now() - t0 < maxMs) {
-      const cur = root.innerText.length;
-      if (cur === last) {
-        if (!stillStart) stillStart = Date.now();
-        if (Date.now() - stillStart >= (quietMs || 0)) return true;
-      } else {
-        stillStart = 0;
-        last = cur;
-      }
-      await U.sleep(120);
-    }
-    return true;
-  }
-
-  // —— 导出 —— 
-  H.querySendStopButtonInScope = querySendStopButtonInScope;
-  H.buttonMode = buttonMode;
-  H.buttonEnabled = buttonEnabled;
-  H.waitButton = waitButton;
-  H.waitReadyToSend = waitReadyToSend;
-  H.waitUploadReadyByButton = waitUploadReadyByButton;
-  H.pressEnterInEditor = pressEnterInEditor;
-  H.waitAndSubmitByEnter = waitAndSubmitByEnter;
-  H.clickSend = clickSend;
-  H.trySend = trySend;
-  H.waitAssistantIdle = waitAssistantIdle;
+  // 暴露
+  H.runSendFromStorage = runSendFromStorage;
+  H.typePromptIntoEditor = typePromptIntoEditor;
+  H.getPromptFromUI = getPromptFromUI;
 
   global.GPTB.uiHelpers = H;
-  try { console.log('[mini] chat.ui.helpers loaded (buttons/send)'); } catch {}
+  try { console.log('[mini] chat.ui.helpers loaded (runSendFromStorage)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
