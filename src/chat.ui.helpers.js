@@ -98,11 +98,39 @@
   }
 
   /** 只在“回车发送后”延时插入一次 'a'（其它地方不插） */
-  async function delayNudgeAfterEnter(editor, delay = 300) {
-    if (!editor) return false;
+async function delayNudgeAfterEnter(editor, delay = 300) {
+  if (!editor) return false;
+  
+  // 确保回车操作已经发生
+  const isEnterPressed = editor.hasAttribute('data-enter-sent') && editor.getAttribute('data-enter-sent') === 'true';
+
+  // 如果回车已经发送，则插入字符 'a'
+  if (isEnterPressed) {
     await sleep(delay);
     return nudgeEditorForReply(editor);
   }
+
+  return false;  // 如果没有回车发送，直接返回不插入
+}
+
+/** 用于插入字符 'a' 并触发 input 事件 */
+function nudgeEditorForReply(editor) {
+  try {
+    if (editor?.isContentEditable || editor?.getAttribute?.('contenteditable') === 'true') {
+      editor.focus();
+      document.execCommand('insertText', false, 'a');
+      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
+      return true;
+    }
+    if (editor?.tagName === 'TEXTAREA') {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(editor, (editor.value || '') + 'a');
+      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
+      return true;
+    }
+  } catch {}
+  return false;
+}
 
   /** 等按钮回到 send 且可点（表示生成结束） */
   async function waitReplyDone(scope, { timeout=60000, stableMs=400 } = {}) {
