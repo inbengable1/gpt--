@@ -78,6 +78,16 @@
     return D.getEditor?.() || await D.waitForSelector?.(sel, timeout);
   }
 
+  // 新增函数：处理429错误并暂停20分钟
+async function handle429Error(response) {
+  if (response.status === 429) {
+    toast('服务器返回429错误，暂停20分钟');
+    await sleep(20 * 60 * 1000); // 暂停20分钟
+    return true; // 返回true表示暂停完成
+  }
+  return false; // 不是429错误，继续处理
+}
+
   /**（内部）向编辑器插入一个字符 'a'，并触发 input 事件 */
   function nudgeEditorForReply(editor) {
     try {
@@ -98,39 +108,11 @@
   }
 
   /** 只在“回车发送后”延时插入一次 'a'（其它地方不插） */
-async function delayNudgeAfterEnter(editor, delay = 300) {
-  if (!editor) return false;
-  
-  // 确保回车操作已经发生
-  const isEnterPressed = editor.hasAttribute('data-enter-sent') && editor.getAttribute('data-enter-sent') === 'true';
-
-  // 如果回车已经发送，则插入字符 'a'
-  if (isEnterPressed) {
+  async function delayNudgeAfterEnter(editor, delay = 300) {
+    if (!editor) return false;
     await sleep(delay);
     return nudgeEditorForReply(editor);
   }
-
-  return false;  // 如果没有回车发送，直接返回不插入
-}
-
-/** 用于插入字符 'a' 并触发 input 事件 */
-function nudgeEditorForReply(editor) {
-  try {
-    if (editor?.isContentEditable || editor?.getAttribute?.('contenteditable') === 'true') {
-      editor.focus();
-      document.execCommand('insertText', false, 'a');
-      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
-      return true;
-    }
-    if (editor?.tagName === 'TEXTAREA') {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-      setter.call(editor, (editor.value || '') + 'a');
-      editor.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, inputType:'insertText', data:'a' }));
-      return true;
-    }
-  } catch {}
-  return false;
-}
 
   /** 等按钮回到 send 且可点（表示生成结束） */
   async function waitReplyDone(scope, { timeout=60000, stableMs=400 } = {}) {
@@ -205,52 +187,56 @@ function nudgeEditorForReply(editor) {
     return ok2;
   }
 
-  // ========== 基础发送：取文件→就绪→粘贴(带重试)→等待可发(超时失败)→覆盖写入prompt→回车 ==========
-  async function runSendFromStorage(fileId, { prompt, deleteAfter=true, timeout=60000, stableMs=500, baseNameForFail='reply' } = {}) {
-    if (!ST.restoreAsFile || !UP.pasteFilesToEditor || !D.waitReadyToSend || !D.pressEnterInEditor) {
-      toast('依赖未就绪'); return { ok:false, reason:'deps' };
-    }
-    const file = await ST.restoreAsFile(fileId);
-    if (!file) { toast('未在存储中找到文件'); return { ok:false, reason:'nofile' }; }
+// ========== 基础发送：取文件→就绪→粘贴(带重试)→等待可发(超时失败)→覆盖写入prompt→回车 ==========
+async function runSendFromStorage(fileId, { prompt, deleteAfter=true, timeout=60000, stableMs=500, baseNameForFail='reply' } = {}) {
+  if (!ST.restoreAsFile || !UP.pasteFilesToEditor || !D.waitReadyToSend || !D.pressEnterInEditor) {
+    toast('依赖未就绪'); return { ok:false, reason:'deps' };
+  }
+  const file = await ST.restoreAsFile(fileId);
+  if (!file) { toast('未在存储中找到文件'); return { ok:false, reason:'nofile' }; }
 
-    const editor = await getEditorOrWait();
-    if (!editor) { toast('找不到输入框'); return { ok:false, reason:'noeditor' }; }
+  const editor = await getEditorOrWait();
+  if (!editor) { toast('找不到输入框'); return { ok:false, reason:'noeditor' }; }
 
-    const scope = D.getComposerScope(editor);
+  const scope = D.getComposerScope(editor);
 
-    // 粘贴（带就绪/确认/重试）
-    const pasted = await pasteWithRetry(editor, [file], scope, UP.pasteFilesToEditor, {
-      settleMs: 250, probeMs: 900
-    });
-    if (!pasted) {
-      toast('粘贴可能未被接收');
-      if (deleteAfter && ST.deleteFile) { try { await ST.deleteFile(fileId); } catch {} }
-      saveFailureFile(baseNameForFail, '粘贴未被接收');
-      return { ok:false, reason:'paste' };
-    }
-
-    // 贴完即可删除存储条目（你的既定策略）
+  // 粘贴（带就绪/确认/重试）
+  const pasted = await pasteWithRetry(editor, [file], scope, UP.pasteFilesToEditor, {
+    settleMs: 250, probeMs: 900
+  });
+  if (!pasted) {
+    toast('粘贴未接收');
     if (deleteAfter && ST.deleteFile) { try { await ST.deleteFile(fileId); } catch {} }
-    toast(`已粘贴：${file.name || '文件'}`);
-
-    // 真正的门禁：等待进入“可发送”（上传通道就绪）
-    const ready = await D.waitReadyToSend(scope, { timeout, stableMs });
-    if (!ready) {
-      toast('上传超时（60秒）');
-      saveFailureFile(baseNameForFail, '上传超时（60秒未进入可发送状态）');
-      return { ok:false, reason:'timeout' };
-    }
-
-    // 覆盖写入 prompt（避免残留）
-    const text = getPromptFromUI(prompt);
-    if (text) { typePromptIntoEditor(editor, text, { overwrite: true }); await sleep(80); }
-
-    // 回车提交（真正触发发送）
-    D.pressEnterInEditor(editor);
-    toast('已触发发送');
-    return { ok:true, editor, scope };
+    saveFailureFile(baseNameForFail, '粘贴未接收');
+    return { ok:false, reason:'paste' };
   }
 
+  if (deleteAfter && ST.deleteFile) { try { await ST.deleteFile(fileId); } catch {} }
+  toast(`已粘贴：${file.name || '文件'}`);
+
+  // 真正的门禁：等待进入“可发送”（上传通道就绪）
+  const ready = await D.waitReadyToSend(scope, { timeout, stableMs });
+  if (!ready) {
+    toast('上传超时（60秒）');
+    saveFailureFile(baseNameForFail, '上传超时（60秒未进入可发送状态）');
+    return { ok:false, reason:'timeout' };
+  }
+
+  // 尝试上传文件并检查是否需要暂停20分钟（检测429错误）
+  const response = await tryUploadFile(file, editor, scope);
+  if (await handle429Error(response)) {
+    return { ok: false, reason: 'paused' }; // 如果检测到429错误，暂停20分钟
+  }
+
+  // 覆盖写入 prompt（避免残留）
+  const text = getPromptFromUI(prompt);
+  if (text) { typePromptIntoEditor(editor, text, { overwrite: true }); await sleep(80); }
+
+  // 回车提交（真正触发发送）
+  D.pressEnterInEditor(editor);
+  toast('已触发发送');
+  return { ok:true, editor, scope };
+}
   // ========== 完整流程：基础发送 → 延时插'a' → 等结束 → 抓取并保存 / 或失败落盘 ==========
   async function runSendFromStorageAndSave(fileId, opts = {}) {
     const {
