@@ -1,4 +1,4 @@
-// ui.panel.js — 极简面板：只负责选择文件与启动批处理（自启动）
+// ui.panel.js — 极简面板：选择文件 + 启动/停止批处理（自启动）
 (function (global) {
   'use strict';
   global.GPTB = global.GPTB || {};
@@ -40,7 +40,7 @@
     const wrap = document.createElement('div');
     wrap.id = PANEL_ID;
     Object.assign(wrap.style, {
-      position:'fixed', right:'16px', bottom:'16px', width:'460px',
+      position:'fixed', right:'16px', bottom:'16px', width:'480px',
       background:'rgba(24,24,28,.96)', color:'#fff', borderRadius:'12px',
       padding:'12px', zIndex:999999, boxShadow:'0 8px 24px rgba(0,0,0,.35)',
       fontSize:'13px', lineHeight:'1.45'
@@ -54,18 +54,21 @@
       </div>
 
       <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-        <button id="gptb-pick"    style="padding:6px 10px;border:none;border-radius:8px;background:#10a37f;color:#fff;cursor:pointer">选择并保存</button>
-        <button id="gptb-batch"   style="padding:6px 10px;border:none;border-radius:8px;background:#eab308;color:#111;cursor:pointer;font-weight:600">开始批处理（新标签接力）</button>
-        <button id="gptb-refresh" style="padding:6px 10px;border:1px solid #444;border-radius:8px;background:transparent;color:#fff;cursor:pointer">刷新列表</button>
-        <button id="gptb-clear"   style="padding:6px 10px;border:1px solid #444;border-radius:8px;background:transparent;color:#fff;cursor:pointer">清空存储</button>
-        <button id="gptb-close"   style="padding:6px 10px;border:1px solid #444;border-radius:8px;background:transparent;color:#fff;cursor:pointer;margin-left:auto">关闭</button>
+        <button id="gptb-pick"     style="padding:6px 10px;border:none;border-radius:8px;background:#10a37f;color:#fff;cursor:pointer">选择并保存</button>
+        <button id="gptb-batch"    style="padding:6px 10px;border:none;border-radius:8px;background:#eab308;color:#111;cursor:pointer;font-weight:600">开始批处理（新标签接力）</button>
+        <button id="gptb-stop"     style="padding:6px 10px;border:1px solid #f59e0b;border-radius:8px;background:transparent;color:#fbbf24;cursor:pointer">停止批处理</button>
+        <button id="gptb-kill"     style="padding:6px 10px;border:1px solid #ef4444;border-radius:8px;background:transparent;color:#f87171;cursor:pointer">紧急停止</button>
+        <button id="gptb-refresh"  style="padding:6px 10px;border:1px solid #444;border-radius:8px;background:transparent;color:#fff;cursor:pointer">刷新列表</button>
+        <button id="gptb-clear"    style="padding:6px 10px;border:1px solid #444;border-radius:8px;background:transparent;color:#fff;cursor:pointer">清空存储</button>
+        <button id="gptb-close"    style="padding:6px 10px;border:1px solid #444;border-radius:8px;background:transparent;color:#fff;cursor:pointer;margin-left:auto">关闭</button>
       </div>
 
       <div style="opacity:.8;margin:4px 0">已保存文件（批处理按队首开始，逐个处理）：</div>
       <div id="gptb-file-list" style="max-height:240px;overflow:auto;border:1px dashed #444;border-radius:8px;padding:6px;background:#0f0f10"></div>
 
       <div style="opacity:.7;font-size:12px;margin-top:6px">
-        说明：点击<b>开始批处理</b>后，将在新标签页打开临时会话。每个标签只处理一个文件→开下一标签→关闭旧标签，直到队列清空。
+        说明：<b>开始批处理</b> 将在新标签页打开临时会话。每个标签只处理一个文件→开下一标签→关闭旧标签，直到队列清空。<br/>
+        若需中止：使用<b>停止批处理</b>（本页完成后停止），或<b>紧急停止</b>（立即广播终止并关闭当前页）。
       </div>
     `;
     document.body.appendChild(wrap);
@@ -76,45 +79,48 @@
       if (metas.length) await refreshList();
     };
 
-  // 开始批处理（新标签接力）
-wrap.querySelector('#gptb-batch').onclick = async (ev) => {
-  if (!BATCH?.start) return toast('batch 模块未就绪');
+    // 开始批处理
+    wrap.querySelector('#gptb-batch').onclick = async (ev) => {
+      if (!BATCH?.start) return toast('batch 模块未就绪');
 
-  // ✅ 关键：在任何 await 之前，先抓住按钮引用
-  const btn = ev?.currentTarget || wrap.querySelector('#gptb-batch');
-  if (!btn) return;
+      const btn = ev?.currentTarget || wrap.querySelector('#gptb-batch');
+      if (!btn) return;
 
-  // 先检查是否有文件（这里可以 await，已经拿到 btn 了）
-  const files = await (ST.listFiles ? ST.listFiles() : []);
-  if (!files.length) return toast('存储为空，请先选择并保存文件');
+      const files = await (ST.listFiles ? ST.listFiles() : []);
+      if (!files.length) return toast('存储为空，请先选择并保存文件');
 
-  // 再禁用按钮并更新文案
-  btn.disabled = true;
-  const oldText = btn.textContent;
-  btn.textContent = '启动中…';
+      btn.disabled = true;
+      const oldText = btn.textContent;
+      btn.textContent = '启动中…';
+      try {
+        const promptVal = document.getElementById('gptb-mini-prompt')?.value || '';
+        await BATCH.start({
+          prompt: promptVal,
+          deleteAfter: true,
+          timeout: 60000,
+          stableMs: 500,
+          replyQuietMs: 500,
+          replyHardMs: 4000
+        });
+      } catch (e) {
+        console.error(e);
+        toast('启动批处理失败');
+      } finally {
+        if (!document.hidden) { btn.disabled = false; btn.textContent = oldText; }
+      }
+    };
 
-  try {
-    const promptVal = document.getElementById('gptb-mini-prompt')?.value || '';
-    await BATCH.start({
-      prompt: promptVal,
-      deleteAfter: true,
-      timeout: 60000,
-      stableMs: 500,
-      replyQuietMs: 500,
-      replyHardMs: 4000
-    });
-    // BATCH.start 内部会打开新标签并尝试关闭当前页；若弹窗被拦截，会回到 finally
-  } catch (e) {
-    console.error(e);
-    toast('启动批处理失败');
-  } finally {
-    // 若页面没有被关闭（弹窗被拦截），恢复按钮
-    if (!document.hidden) {
-      btn.disabled = false;
-      btn.textContent = oldText;
-    }
-  }
-};
+    // 停止批处理（软停）
+    wrap.querySelector('#gptb-stop').onclick = () => {
+      if (!BATCH?.stopSoft) return toast('batch 模块未就绪');
+      BATCH.stopSoft();
+    };
+
+    // 紧急停止（硬停）
+    wrap.querySelector('#gptb-kill').onclick = () => {
+      if (!BATCH?.stopHard) return toast('batch 模块未就绪');
+      BATCH.stopHard();
+    };
 
     // 刷新
     wrap.querySelector('#gptb-refresh').onclick = refreshList;
@@ -140,11 +146,11 @@ wrap.querySelector('#gptb-batch').onclick = async (ev) => {
     ensurePanel();
   }
 
-  // 导出（避免覆盖其它 ui 字段）
   global.GPTB.ui = Object.assign(global.GPTB.ui || {}, { ensurePanel, refreshList });
 
-  // 控制台桥接
   try { if (typeof unsafeWindow !== 'undefined') unsafeWindow.GPTB = global.GPTB; } catch {}
-  try { console.log('[mini] ui.panel loaded (batch-only)'); } catch {}
+  try { console.log('[mini] ui.panel loaded (batch + stop/kill)'); } catch {}
 })(typeof window !== 'undefined' ? window : this);
+
+
 
